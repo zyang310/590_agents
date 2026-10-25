@@ -7,12 +7,33 @@ owns Harbor tasks and adapters. Harbor is not a dependency of this package.
 
 ## Setup and usage
 
+### 1. Install dependencies (once)
+
+Run this once after cloning, and again after changing entry points in `pyproject.toml`:
+
 ```sh
 uv sync --locked
+```
+
+### 2. See which agents exist
+
+```sh
 uv run agents590 --list
+```
+
+### 3. Run an agent
+
+Pick one of the two forms below. They run the same code.
+
+```sh
+# Installed command
 uv run agents590 krisj_echo -i "Hello from the CLI"
+
+# Equivalent, via the Python module
 uv run python -m agents590 krisj_echo --instruction "The same shared entry point"
 ```
+
+### CLI options
 
 `-i` / `--instruction` passes one instruction. `--cwd` selects an existing working
 directory, `--model` overrides the agent's model, and `--env-file` explicitly loads
