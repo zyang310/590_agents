@@ -39,6 +39,13 @@ uv run python -m agents590 krisj_echo --instruction "The same shared entry point
 directory, `--model` overrides the agent's model, and `--env-file` explicitly loads
 configuration without overriding variables already exported in the shell.
 
+While an agent runs, the CLI draws its progress on stderr: one block per model step
+and per shell command (exit code, timing, and the head and tail of its output), then
+totals for steps, commands and tokens. stdout carries only the final answer, so pipes
+and Harbor's `stdout.txt` are unchanged. `-q` / `--quiet` hides the trace. Agents feed
+it by calling `context.report(...)` with the events in `agents590.events`; agents that
+report nothing still get the header and summary.
+
 The `krisj_echo` agent returns the instruction without tools or API requests. The
 `krisj_starter` agent is the migrated course scaffold: its model/tool loop intentionally
 raises `NotImplementedError` until implemented. Its settings already support
