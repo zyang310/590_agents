@@ -1,3 +1,4 @@
+# Aw, geez, I guess this is the Morty agent package—please be careful with the tools, okay?
 """Morty, an agent independent of Harbor."""
 
 import asyncio
@@ -12,7 +13,7 @@ from agents590.provider import UNCOpenAISettings
 
 MAX_BASH_OUTPUT_CHARS = 10_000
 BASH_TIMEOUT_SECONDS = 30.0
-MAX_STEPS = 25
+MAX_STEPS = 50
 
 BASH_TOOL: FunctionToolParam = {
     "type": "function",
