@@ -7,25 +7,19 @@ requires-python = ">=3.12"
 dependencies = [
     "openai>=2,<3",
     "python-dotenv>=1,<2",
-    "rich>=13,<16",
 ]
 
 [project.scripts]
 agents590 = "agents590.cli:main"
 openai-smoke = "agents590.smoke:main"
-agents590-ui = "agents590.ui.app:main"
 
 [project.entry-points."agents590.agents"]
 krisj_starter = "agents590.krisj_starter:StarterAgent"
 krisj_echo = "agents590.krisj_echo:EchoAgent"
 morty = "agents590.morty:Morty"
 
-[project.optional-dependencies]
-ui = ["textual>=1,<9"]
-
 [dependency-groups]
 dev = [
-    "textual>=1,<9",
     "pyright>=1.1,<2",
     "pytest>=8,<10",
     "ruff>=0.14,<1",

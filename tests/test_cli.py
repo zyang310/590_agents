@@ -9,7 +9,6 @@ import pytest
 
 from agents590 import cli
 from agents590.contracts import RunContext
-from agents590.events import ModelResponded, StepStarted
 
 
 def test_module_and_console_entrypoints_work_outside_project(tmp_path: Path) -> None:
@@ -81,32 +80,9 @@ def test_cli_passes_instruction_workdir_and_model_to_the_selected_agent(
     assert capsys.readouterr().out == "completed\n"
 
 
-@pytest.mark.parametrize("quiet", [False, True])
-def test_trace_goes_to_stderr_and_answer_alone_to_stdout(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], quiet: bool
-) -> None:
-    class ReportingAgent:
-        async def run(self, instruction: str, context: RunContext) -> str:
-            context.report(StepStarted(1, 50, "test-deployment"))
-            context.report(ModelResponded(1, "the answer", 0, 1.0))
-            return "the answer"
-
-    monkeypatch.setattr(cli, "create_agent", lambda name: ReportingAgent())
-    assert cli.main(["reporter", "-i", "test", *(["-q"] if quiet else [])]) == 0
-    captured = capsys.readouterr()
-    assert captured.out == "the answer\n"
-    if quiet:
-        assert captured.err == ""
-    else:
-        assert "reporter ·" in captured.err
-        assert "✓ done · 1 step · test-deployment" in captured.err
-
-
 def test_starter_scaffold_fails_explicitly(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["krisj_starter", "-i", "test"]) == 1
-    err = capsys.readouterr().err
-    assert "Implement the UNC Azure model/tool loop" in err
-    assert "✗ failed" in err
+    assert "Implement the UNC Azure model/tool loop" in capsys.readouterr().err
 
 
 def test_explicit_env_file_preserves_exported_environment(
