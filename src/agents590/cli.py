@@ -7,9 +7,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from dotenv import load_dotenv
+from rich.console import Console
 
 from agents590.contracts import RunContext
 from agents590.registry import agent_names, create_agent
+from agents590.trace import Trace
 
 
 class Arguments(argparse.Namespace):
@@ -21,6 +23,7 @@ class Arguments(argparse.Namespace):
     model: str | None
     env_file: Path | None
     list_agents: bool
+    quiet: bool
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -32,6 +35,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("-m", "--model", help="Per-run model/deployment override")
     parser.add_argument("--env-file", type=Path, help="Explicit environment file to load")
     parser.add_argument("--list", dest="list_agents", action="store_true", help="List agents")
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="Hide the progress trace printed to stderr"
+    )
     args = parser.parse_args(argv, namespace=Arguments())
     if args.list_agents:
         print("\n".join(agent_names()))
@@ -48,13 +54,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not env_file.is_file():
             parser.error("--env-file must name an existing file")
         load_dotenv(env_file, override=False)
+    # Progress goes to stderr so stdout stays the bare answer that Harbor and pipes read.
+    trace = Trace.to_console(Console(stderr=True, highlight=False, quiet=args.quiet))
     try:
         agent = create_agent(args.agent)
-        output = asyncio.run(agent.run(args.instruction, RunContext(cwd=cwd, model=args.model)))
+        trace.start(args.agent, args.instruction, cwd)
+        context = RunContext(cwd=cwd, model=args.model, on_event=trace)
+        output = asyncio.run(agent.run(args.instruction, context))
     except (ValueError, TypeError, NotImplementedError) as error:
+        trace.finish("failed")
         print(f"agents590: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
+        trace.finish("interrupted")
         return 130
+    except Exception:
+        trace.finish("failed")
+        raise
+    trace.finish()
     print(output)
     return 0

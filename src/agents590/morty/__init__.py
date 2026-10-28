@@ -3,12 +3,14 @@
 
 import asyncio
 import json
+import time
 from asyncio.subprocess import PIPE
 from typing import cast
 
 from openai.types.responses import FunctionToolParam, ResponseInputParam
 
 from agents590.contracts import RunContext
+from agents590.events import CommandFinished, CommandStarted, ModelResponded, StepStarted
 from agents590.provider import UNCOpenAISettings
 
 MAX_BASH_OUTPUT_CHARS = 10_000
@@ -30,17 +32,6 @@ BASH_TOOL: FunctionToolParam = {
 
 
 
-'''json
-{
-    "type": "function_call",
-    "id": "fc_68a1...",             
-    "call_id": "call_9xK2...",      
-    "name": "bash",                 
-    "arguments": '{"command":"ls -la"}', 
-    "status": "completed",
-}
-'''
-
 class Morty:
     """Scaffold for a model/tool loop using the shared standalone interface."""
 
@@ -60,7 +51,10 @@ class Morty:
 
         history: ResponseInputParam = [{"role": "user", "content": instruction}]
 
-        for _ in range(MAX_STEPS):
+        for step in range(1, MAX_STEPS + 1):
+            # tell whoever is watching (the CLI trace) what we're doing
+            context.report(StepStarted(step, MAX_STEPS, model))
+            started = time.monotonic()
             response = await client.responses.create(
                 model=model,
                 input=history,
@@ -78,9 +72,20 @@ class Morty:
             # grabs all calls from the output, keep iterating when there are more
             # calls to be made, else just returns since we are done.
             calls = [item for item in response.output if item.type == "function_call"]
+            usage = response.usage
+            context.report(
+                ModelResponded(
+                    step=step,
+                    text=response.output_text,
+                    tool_calls=len(calls),
+                    seconds=time.monotonic() - started,
+                    input_tokens=usage.input_tokens if usage else 0,
+                    output_tokens=usage.output_tokens if usage else 0,
+                )
+            )
             if not calls:
                 return response.output_text
-            
+
             # calls our run bash function to execute the tool
             for call in calls:
                 command = json.loads(call.arguments)["command"]
@@ -102,6 +107,9 @@ class Morty:
         timeout: float = BASH_TIMEOUT_SECONDS,
     ) -> str:
 
+        context.report(CommandStarted(command))
+        started = time.monotonic()
+
         # create a process and and define proc as that handle
         proc = await asyncio.create_subprocess_shell(
             command, cwd=context.cwd, stdout=PIPE, stderr=PIPE
@@ -115,10 +123,13 @@ class Morty:
 
             # waits to reap this killed process, could leave a zombie process if not
             await proc.wait()
+            context.report(CommandFinished(command, None, "", "", time.monotonic() - started))
             return f"Command timed out after {timeout:g} seconds and was killed."
 
         out = stdout.decode(errors="replace")
         err = stderr.decode(errors="replace")
+        elapsed = time.monotonic() - started
+        context.report(CommandFinished(command, proc.returncode, out, err, elapsed))
         result = f"exit code: {proc.returncode} \n stdout: \n {out} \n stderr: \n {err}"
 
         # limits the result to MAX_BASH_OUTPUT_CHARS char
