@@ -43,7 +43,7 @@ class MortyApp(App[None]):
     """Collects the same inputs as the CLI and shows the agent's progress and answer."""
 
     TITLE = "agents590"
-    BINDINGS = [("ctrl+l", "clear", "Clear output")]
+    BINDINGS = [("ctrl+l", "clear", "Clear output"), ("escape", "clear_prompt", "Clear prompt")]
     CSS = """
     #settings { height: 1; padding: 0 1; background: $panel; }
     #settings Label { padding: 0 1; color: $text-muted; }
@@ -92,15 +92,24 @@ class MortyApp(App[None]):
     def action_clear(self) -> None:
         self.query_one("#log", RichLog).clear()
 
+    def action_clear_prompt(self) -> None:
+        prompt = self.query_one("#instruction", Input)
+        prompt.clear()
+        prompt.focus()
+
     @on(Input.Submitted, "#instruction")
     @on(Button.Pressed, "#run")
     def start_run(self) -> None:
         log = self.query_one("#log", RichLog)
         agent: object = self.query_one("#agent", Select).value  # pyright: ignore
-        instruction = self.query_one("#instruction", Input).value
+        prompt = self.query_one("#instruction", Input)
+        instruction = prompt.value
         if not isinstance(agent, str):
             log.write("Select an agent first.")
             return
+        if not instruction.strip():  # starting a run here would cancel the one in progress
+            return
+        prompt.clear()
         self.query_one("#run", Button).disabled = True
         self.run_worker(self._run(agent, instruction), exclusive=True)
 
@@ -118,6 +127,9 @@ class MortyApp(App[None]):
         log.write(text if ok else f"ERROR: {text}")
         log.write(Rule(style="dim"))
         self.query_one("#run", Button).disabled = False
+        prompt = self.query_one("#instruction", Input)
+        if not ok and not prompt.value:  # give a failed instruction back so it can be retried
+            prompt.insert_text_at_cursor(instruction)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

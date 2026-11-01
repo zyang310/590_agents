@@ -110,3 +110,85 @@ def test_settings_share_one_line_and_the_prompt_sits_below_the_log(tmp_path: Pat
     assert regions["agent"].width >= 20
     assert regions["instruction"].y >= regions["log"].bottom
     assert all(region.right <= 100 for region in regions.values())
+
+
+def test_prompt_clears_on_send_and_enter_on_empty_does_not_cancel_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = SteppingAgent()
+    monkeypatch.setattr(session, "create_agent", lambda name: agent)
+
+    async def scenario() -> tuple[str, list[str]]:
+        app = MortyApp(default_agent="krisj_echo", cwd=tmp_path)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#instruction", Input)
+            prompt.value = "count files"
+            await pilot.press("enter")
+            await pilot.pause()
+            after_send = prompt.value
+            await pilot.press("enter")
+            await pilot.pause()
+            agent.release.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            return after_send, [line.text.rstrip() for line in app.query_one("#log", RichLog).lines]
+
+    after_send, lines = asyncio.run(scenario())
+    assert after_send == ""
+    assert "one file" in lines
+    assert not any("cancelled" in line for line in lines)
+
+
+def test_failed_run_gives_the_instruction_back(tmp_path: Path) -> None:
+    async def scenario() -> tuple[str, int]:
+        app = MortyApp(default_agent="krisj_echo", cwd=tmp_path / "missing")
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#instruction", Input)
+            prompt.value = "retry me"
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            return prompt.value, prompt.cursor_position
+
+    assert asyncio.run(scenario()) == ("retry me", len("retry me"))
+
+
+def test_failed_run_keeps_what_was_typed_since(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = asyncio.Event()
+
+    class FailingAgent:
+        async def run(self, instruction: str, context: RunContext) -> str:
+            await release.wait()
+            raise ValueError("model unavailable")
+
+    monkeypatch.setattr(session, "create_agent", lambda name: FailingAgent())
+
+    async def scenario() -> str:
+        app = MortyApp(default_agent="krisj_echo", cwd=tmp_path)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#instruction", Input)
+            prompt.value = "first"
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press(*"next")
+            release.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            return prompt.value
+
+    assert asyncio.run(scenario()) == "next"
+
+
+@pytest.mark.parametrize("keys", [["left", "escape"], ["ctrl+u"], ["ctrl+a", "ctrl+k"]])
+def test_keys_that_empty_the_prompt(tmp_path: Path, keys: list[str]) -> None:
+    async def scenario() -> str:
+        app = MortyApp(default_agent="krisj_echo", cwd=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press(*"hello")
+            await pilot.press(*keys)
+            await pilot.pause()
+            return app.query_one("#instruction", Input).value
+
+    assert asyncio.run(scenario()) == ""
