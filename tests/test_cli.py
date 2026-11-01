@@ -126,3 +126,45 @@ def test_missing_paths_fail_before_loading_an_agent(tmp_path: Path, option: str)
     with pytest.raises(SystemExit) as error:
         cli.main(["krisj_echo", "-i", "test", option, str(tmp_path / "missing")])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("   ", None),
+        ("/tmp/agent/trajectory.json", Path("/tmp/agent/trajectory.json")),
+    ],
+)
+def test_cli_passes_trajectory_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str | None,
+    expected: Path | None,
+) -> None:
+    seen: list[RunContext] = []
+
+    class RecordingAgent:
+        async def run(self, instruction: str, context: RunContext) -> str:
+            seen.append(context)
+            return "completed"
+
+    monkeypatch.setattr(cli, "create_agent", lambda name: RecordingAgent())
+    if value is None:
+        monkeypatch.delenv(cli.TRAJECTORY_PATH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(cli.TRAJECTORY_PATH_ENV, value)
+
+    assert cli.main(["custom-agent", "-i", "test", "--cwd", str(tmp_path)]) == 0
+    assert seen[0].trajectory_path == expected
+    assert capsys.readouterr().out == "completed\n"
+
+
+def test_cli_rejects_relative_trajectory_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(cli.TRAJECTORY_PATH_ENV, "logs/trajectory.json")
+    with pytest.raises(SystemExit) as error:
+        cli.main(["krisj_echo", "-i", "test"])
+    assert error.value.code == 2

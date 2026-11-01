@@ -9,11 +9,12 @@ from agents590.events import AgentEvent, EventSink
 
 @dataclass(frozen=True)
 class RunContext:
-    """Explicit working directory, optional per-run model override and progress listener."""
+    """Working directory, optional model override, progress listener, and trajectory output path."""
 
     cwd: Path
     model: str | None = None
     on_event: EventSink | None = field(default=None, compare=False, repr=False)
+    trajectory_path: Path | None = None
 
     def report(self, event: AgentEvent) -> None:
         """Pass a progress event to the caller; agents may report none at all."""

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,6 +13,8 @@ from rich.console import Console
 from agents590.contracts import RunContext
 from agents590.registry import agent_names, create_agent
 from agents590.trace import Trace
+
+TRAJECTORY_PATH_ENV = "AGENTS590_TRAJECTORY_PATH"
 
 
 class Arguments(argparse.Namespace):
@@ -54,12 +57,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not env_file.is_file():
             parser.error("--env-file must name an existing file")
         load_dotenv(env_file, override=False)
+    trajectory_path_value = os.environ.get(TRAJECTORY_PATH_ENV, "").strip()
+    trajectory_path = Path(trajectory_path_value) if trajectory_path_value else None
+    if trajectory_path is not None and not trajectory_path.is_absolute():
+        parser.error(f"{TRAJECTORY_PATH_ENV} must be an absolute path")
     # Progress goes to stderr so stdout stays the bare answer that Harbor and pipes read.
     trace = Trace.to_console(Console(stderr=True, highlight=False, quiet=args.quiet))
     try:
         agent = create_agent(args.agent)
         trace.start(args.agent, args.instruction, cwd)
-        context = RunContext(cwd=cwd, model=args.model, on_event=trace)
+        context = RunContext(
+            cwd=cwd, model=args.model, on_event=trace, trajectory_path=trajectory_path
+        )
         output = asyncio.run(agent.run(args.instruction, context))
     except (ValueError, TypeError, NotImplementedError) as error:
         trace.finish("failed")

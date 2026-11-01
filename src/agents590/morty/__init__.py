@@ -11,11 +11,13 @@ from openai.types.responses import FunctionToolParam, ResponseInputParam
 
 from agents590.contracts import RunContext
 from agents590.events import CommandFinished, CommandStarted, ModelResponded, StepStarted
+from agents590.morty.trajectory import Trajectory
 from agents590.provider import UNCOpenAISettings
 
 MAX_BASH_OUTPUT_CHARS = 10_000
 BASH_TIMEOUT_SECONDS = 30.0
 MAX_STEPS = 50
+
 
 BASH_TOOL: FunctionToolParam = {
     "type": "function",
@@ -29,7 +31,6 @@ BASH_TOOL: FunctionToolParam = {
     },
     "strict": True,
 }
-
 
 
 class Morty:
@@ -50,6 +51,7 @@ class Morty:
         model = settings.model
 
         history: ResponseInputParam = [{"role": "user", "content": instruction}]
+        trajectory = Trajectory(context.trajectory_path, instruction, model, BASH_TOOL)
 
         for step in range(1, MAX_STEPS + 1):
             # tell whoever is watching (the CLI trace) what we're doing
@@ -73,6 +75,7 @@ class Morty:
             # calls to be made, else just returns since we are done.
             calls = [item for item in response.output if item.type == "function_call"]
             usage = response.usage
+            trajectory.add_response(response)
             context.report(
                 ModelResponded(
                     step=step,
@@ -90,6 +93,7 @@ class Morty:
             for call in calls:
                 command = json.loads(call.arguments)["command"]
                 result = await self.run_bash(command, context)
+                trajectory.add_result(call.call_id, result)
                 history.append(
                     {
                         "type": "function_call_output",
