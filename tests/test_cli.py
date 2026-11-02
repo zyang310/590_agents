@@ -87,7 +87,7 @@ def test_trace_goes_to_stderr_and_answer_alone_to_stdout(
 ) -> None:
     class ReportingAgent:
         async def run(self, instruction: str, context: RunContext) -> str:
-            context.report(StepStarted(1, 50, "test-deployment"))
+            context.report(StepStarted(1, "test-deployment"))
             context.report(ModelResponded(1, "the answer", 0, 1.0))
             return "the answer"
 

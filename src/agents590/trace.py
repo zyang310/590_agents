@@ -27,6 +27,8 @@ from agents590.events import (
     CommandStarted,
     ModelResponded,
     StepStarted,
+    ToolFinished,
+    ToolStarted,
 )
 
 INSTRUCTION_LINES = 3
@@ -40,7 +42,7 @@ def _ignore(label: RenderableType | None) -> None:
 
 
 class Trace:
-    """Event sink that writes one block per model step and per shell command.
+    """Event sink that writes one block per model step, shell command and tool call.
 
     `write` receives each finished block. `wait` receives a live label while the agent waits
     on the model or a command, then None once the wait is over.
@@ -57,6 +59,7 @@ class Trace:
         self._model = ""
         self._steps = 0
         self._commands = 0
+        self._tool_calls = 0
         self._tokens = 0
         self._answered = False
 
@@ -81,7 +84,7 @@ class Trace:
         match event:
             case StepStarted():
                 self._model = event.model
-                self._wait(_Ticker(f"thinking · step {event.step}/{event.max_steps}"))
+                self._wait(_Ticker(f"thinking · step {event.step}"))
             case ModelResponded():
                 self._steps = event.step
                 self._tokens += event.input_tokens + event.output_tokens
@@ -94,6 +97,12 @@ class Trace:
                 self._wait(_Ticker("running"))
             case CommandFinished():
                 self._write(_result(event))
+            case ToolStarted():
+                self._tool_calls += 1
+                self._write(_tool(event))
+                self._wait(_Ticker("running"))
+            case ToolFinished():
+                self._write(_tool_result(event))
 
     def finish(self, problem: str | None = None) -> None:
         """Show the outcome and totals; does nothing if the run never started."""
@@ -105,6 +114,8 @@ class Trace:
             stats.append(_count(self._steps, "step"))
         if self._commands:
             stats.append(_count(self._commands, "command"))
+        if self._tool_calls:
+            stats.append(_count(self._tool_calls, "tool call"))
         if self._tokens:
             stats.append(_tokens(self._tokens))
         if self._model:
@@ -193,6 +204,22 @@ def _result(event: CommandFinished) -> Text:
         text.append("\n")
     text.append("  ╰ ", style=color)
     text.append(status, style=f"bold {color}")
+    text.append(f" · {_duration(event.seconds)}", style="dim")
+    return text
+
+
+def _tool(event: ToolStarted) -> Text:
+    text = Text("  ", no_wrap=True, overflow="ellipsis")
+    text.append(event.name, style="cyan")
+    text.append(f" {event.detail}", style="bold")
+    return text
+
+
+def _tool_result(event: ToolFinished) -> Text:
+    color = "red" if event.failed else "green"
+    text = Text(no_wrap=True, overflow="ellipsis")
+    text.append("  ╰ ", style=color)
+    text.append(event.summary, style=f"bold {color}")
     text.append(f" · {_duration(event.seconds)}", style="dim")
     return text
 

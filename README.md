@@ -61,6 +61,35 @@ agents590 krisj_echo -i "An instruction from another project"
 Changes to implementation source are picked up by new invocations. Reinstall or
 run `uv sync` after changing entry-point registrations in `pyproject.toml`.
 
+### Terminal UI
+
+`agents590-ui` runs the same registered agents in a terminal app, so instructions
+need no shell quoting. `uv sync` already installs it. Agents that call a model read
+their settings from the environment file, as described under
+[UNC Azure configuration](#unc-azure-configuration):
+
+```sh
+uv run agents590-ui --env-file .env
+```
+
+Choose the agent, model, and working directory in the top bar, type an instruction,
+and press Enter. Progress and the answer appear in the log. Esc clears the prompt,
+Ctrl+L clears the log, and Ctrl+Q quits.
+
+Name an agent to preselect it instead of `morty`, and use `--cwd` to set the starting
+directory:
+
+```sh
+uv run agents590-ui krisj_echo --cwd ../my-project
+```
+
+For use outside this checkout, install the tool with Textual:
+
+```sh
+uv tool install --editable /absolute/path/to/590_agents --with textual
+agents590-ui --env-file /absolute/path/to/590_agents/.env
+```
+
 ## Add an agent
 
 1. Create a package such as `src/agents590/my_agent/`.

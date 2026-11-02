@@ -1,36 +1,23 @@
 # Aw, geez, I guess this is the Morty agent package—please be careful with the tools, okay?
 """Morty, an agent independent of Harbor."""
 
-import asyncio
-import json
 import time
-from asyncio.subprocess import PIPE
 from typing import cast
 
-from openai.types.responses import FunctionToolParam, ResponseInputParam
+from openai.types.responses import ResponseInputParam
+from openai.types.responses.response_input_item_param import FunctionCallOutput
 
 from agents590.contracts import RunContext
-from agents590.events import CommandFinished, CommandStarted, ModelResponded, StepStarted
+from agents590.events import ModelResponded, StepStarted
+from agents590.morty.prompt import SYSTEM_PROMPT
+from agents590.morty.tools import TOOL_DEFINITIONS, run_tool
 from agents590.morty.trajectory import Trajectory
+from agents590.morty.trimming import mask_old_results
 from agents590.provider import UNCOpenAISettings
 
-MAX_BASH_OUTPUT_CHARS = 10_000
-BASH_TIMEOUT_SECONDS = 30.0
-MAX_STEPS = 50
-
-
-BASH_TOOL: FunctionToolParam = {
-    "type": "function",
-    "name": "bash",
-    "description": "Run a shell command and return its exit code, stdout and stderr.",
-    "parameters": {
-        "type": "object",
-        "properties": {"command": {"type": "string", "description": "The command to run."}},
-        "required": ["command"],
-        "additionalProperties": False,
-    },
-    "strict": True,
-}
+# The deployment's real context window isn't known here, so keep this well below it:
+# the next request also carries this step's tool results (each at most MAX_OUTPUT_CHARS).
+MAX_CONTEXT_TOKENS = 200_000
 
 
 class Morty:
@@ -51,18 +38,23 @@ class Morty:
         model = settings.model
 
         history: ResponseInputParam = [{"role": "user", "content": instruction}]
-        trajectory = Trajectory(context.trajectory_path, instruction, model, BASH_TOOL)
+        results: list[FunctionCallOutput] = []
+        trajectory = Trajectory(context.trajectory_path, instruction, model, TOOL_DEFINITIONS)
 
-        for step in range(1, MAX_STEPS + 1):
+        # Every step adds to the history, so the token cap below always ends this loop.
+        step = 0
+        while True:
+            step += 1
             # tell whoever is watching (the CLI trace) what we're doing
-            context.report(StepStarted(step, MAX_STEPS, model))
+            context.report(StepStarted(step, model))
             started = time.monotonic()
             response = await client.responses.create(
                 model=model,
+                instructions=SYSTEM_PROMPT,
                 input=history,
                 store=False,
                 background=False,
-                tools=[BASH_TOOL],
+                tools=TOOL_DEFINITIONS,
             )
 
             # append output to history to pass into next iteration
@@ -89,54 +81,25 @@ class Morty:
             if not calls:
                 return response.output_text
 
-            # calls our run bash function to execute the tool
-            for call in calls:
-                command = json.loads(call.arguments)["command"]
-                result = await self.run_bash(command, context)
-                trajectory.add_result(call.call_id, result)
-                history.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": call.call_id,
-                        "output": result,
-                    }
+            # input + output is the history the next request starts from
+            used = usage.input_tokens + usage.output_tokens if usage else 0
+            if used >= MAX_CONTEXT_TOKENS:
+                return (
+                    f"Stopped at {used:,} context tokens (cap {MAX_CONTEXT_TOKENS:,}) "
+                    "without a final answer."
                 )
 
-        return f"Stopped after {MAX_STEPS} steps without a final answer."
+            # runs the calls one at a time and in order, since later edits can depend on earlier
+            for call in calls:
+                result = await run_tool(call.name, call.arguments, context)
+                trajectory.add_result(call.call_id, result)
+                output: FunctionCallOutput = {
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": result,
+                }
+                history.append(output)
+                results.append(output)
 
-    async def run_bash(
-        self,
-        command: str,
-        context: RunContext,
-        timeout: float = BASH_TIMEOUT_SECONDS,
-    ) -> str:
-
-        context.report(CommandStarted(command))
-        started = time.monotonic()
-
-        # create a process and and define proc as that handle
-        proc = await asyncio.create_subprocess_shell(
-            command, cwd=context.cwd, stdout=PIPE, stderr=PIPE
-        )
-
-        # awais for the result of proc.communicate for a timeout amount of time
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
-        except TimeoutError:
-            proc.kill()
-
-            # waits to reap this killed process, could leave a zombie process if not
-            await proc.wait()
-            context.report(CommandFinished(command, None, "", "", time.monotonic() - started))
-            return f"Command timed out after {timeout:g} seconds and was killed."
-
-        out = stdout.decode(errors="replace")
-        err = stderr.decode(errors="replace")
-        elapsed = time.monotonic() - started
-        context.report(CommandFinished(command, proc.returncode, out, err, elapsed))
-        result = f"exit code: {proc.returncode} \n stdout: \n {out} \n stderr: \n {err}"
-
-        # limits the result to MAX_BASH_OUTPUT_CHARS char
-        if len(result) > MAX_BASH_OUTPUT_CHARS:
-            result = result[:MAX_BASH_OUTPUT_CHARS] + "\n[output truncated]"
-        return result
+            # only the newest results stay in full; the calls themselves remain in history
+            mask_old_results(results)

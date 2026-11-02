@@ -56,11 +56,11 @@ class SteppingAgent:
         self.release = asyncio.Event()
 
     async def run(self, instruction: str, context: RunContext) -> str:
-        context.report(StepStarted(1, 50, "test-deployment"))
+        context.report(StepStarted(1, "test-deployment"))
         context.report(ModelResponded(1, "", 1, 1.0, 900, 100))
         context.report(CommandStarted("ls"))
         context.report(CommandFinished("ls", 0, "a.py\n", "", 0.1))
-        context.report(StepStarted(2, 50, "test-deployment"))
+        context.report(StepStarted(2, "test-deployment"))
         await self.release.wait()
         context.report(ModelResponded(2, "one file", 0, 1.0))
         return "one file"

@@ -34,7 +34,7 @@ class Trajectory:
     """Rewrites `path` after every change, so a run killed mid-way still leaves a valid file."""
 
     def __init__(
-        self, path: Path | None, instruction: str, model: str, tool: FunctionToolParam
+        self, path: Path | None, instruction: str, model: str, tools: list[FunctionToolParam]
     ) -> None:
         self._path = path
         self._model = model
@@ -53,6 +53,7 @@ class Trajectory:
                         "parameters": tool["parameters"],
                     },
                 }
+                for tool in tools
             ],
         }
         self._steps: list[dict[str, object]] = []

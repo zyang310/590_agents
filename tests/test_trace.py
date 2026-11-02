@@ -4,7 +4,8 @@ import io
 from pathlib import Path
 
 import pytest
-from rich.console import Console
+from rich.console import Console, RenderableType
+from rich.text import Text
 
 from agents590.events import (
     AgentEvent,
@@ -12,6 +13,8 @@ from agents590.events import (
     CommandStarted,
     ModelResponded,
     StepStarted,
+    ToolFinished,
+    ToolStarted,
 )
 from agents590.trace import Trace
 
@@ -28,7 +31,7 @@ def _render(events: list[AgentEvent], problem: str | None = None) -> str:
 
 def _command(stdout: str = "", stderr: str = "", exit_code: int | None = 0) -> list[AgentEvent]:
     return [
-        StepStarted(1, 50, "test-deployment"),
+        StepStarted(1, "test-deployment"),
         ModelResponded(1, "Looking around.", 1, 2.34, 1_000, 200),
         CommandStarted("ls"),
         CommandFinished("ls", exit_code, stdout, stderr, 0.25),
@@ -38,7 +41,7 @@ def _command(stdout: str = "", stderr: str = "", exit_code: int | None = 0) -> l
 def test_trace_shows_steps_commands_and_totals() -> None:
     events = [
         *_command(stdout="a.py\nb.py\n"),
-        StepStarted(2, 50, "test-deployment"),
+        StepStarted(2, "test-deployment"),
         ModelResponded(2, "There are two files.", 0, 1.0, 1_500, 100),
     ]
     assert _render(events).splitlines() == [
@@ -58,7 +61,7 @@ def test_trace_shows_steps_commands_and_totals() -> None:
 
 
 def test_final_answer_is_left_to_the_caller() -> None:
-    events = [StepStarted(1, 50, "m"), ModelResponded(1, "the final answer", 0, 1.0)]
+    events = [StepStarted(1, "m"), ModelResponded(1, "the final answer", 0, 1.0)]
     output = _render(events)
     assert "the final answer" not in output
     assert "step 1 ·" not in output
@@ -74,7 +77,7 @@ def test_long_output_keeps_its_head_and_tail() -> None:
 
 def test_multiline_commands_are_clipped() -> None:
     command = "cat > notes.txt <<'EOF'\n" + "\n".join(["text"] * 10) + "\nEOF"
-    output = _render([StepStarted(1, 50, "m"), CommandStarted(command)])
+    output = _render([StepStarted(1, "m"), CommandStarted(command)])
     assert "  $ cat > notes.txt <<'EOF'\n    text\n    text\n    text\n    … +8 lines\n" in output
 
 
@@ -109,3 +112,29 @@ def test_finish_without_start_prints_nothing() -> None:
     output = io.StringIO()
     Trace.to_console(Console(file=output)).finish("failed")
     assert output.getvalue() == ""
+
+
+def test_tool_calls_show_a_summary_and_count_towards_the_totals() -> None:
+    events: list[AgentEvent] = [
+        StepStarted(1, "m"),
+        ModelResponded(1, "", 1, 1.0),
+        ToolStarted("read", "src/a.py"),
+        ToolFinished("read", "src/a.py", "120 lines", False, 0.25),
+        StepStarted(2, "m"),
+        ModelResponded(2, "done", 0, 1.0),
+    ]
+    lines = _render(events).splitlines()
+    assert "  read src/a.py" in lines
+    assert "  ╰ 120 lines · 0.2s" in lines
+    assert any(line.startswith("✓ done · 2 steps · 1 tool call · m") for line in lines)
+
+
+@pytest.mark.parametrize(("failed", "color"), [(False, "green"), (True, "red")])
+def test_tool_outcome_is_colored_by_whether_it_failed(failed: bool, color: str) -> None:
+    blocks: list[RenderableType] = []
+    Trace(blocks.append)(ToolFinished("edit", "a.py", "the outcome", failed, 0.25))
+
+    block = blocks[-1]
+    assert isinstance(block, Text)
+    assert block.plain == "  ╰ the outcome · 0.2s"
+    assert any(str(span.style) == f"bold {color}" for span in block.spans)

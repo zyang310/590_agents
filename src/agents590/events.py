@@ -9,7 +9,6 @@ class StepStarted:
     """The agent is asking the model for its next move."""
 
     step: int
-    max_steps: int
     model: str
 
 
@@ -43,5 +42,26 @@ class CommandFinished:
     seconds: float
 
 
-type AgentEvent = StepStarted | ModelResponded | CommandStarted | CommandFinished
+@dataclass(frozen=True)
+class ToolStarted:
+    """A tool other than the shell is about to run; `detail` says what it acts on."""
+
+    name: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class ToolFinished:
+    """That tool ended; `summary` is a short outcome, or the error when `failed` is true."""
+
+    name: str
+    detail: str
+    summary: str
+    failed: bool
+    seconds: float
+
+
+type AgentEvent = (
+    StepStarted | ModelResponded | CommandStarted | CommandFinished | ToolStarted | ToolFinished
+)
 type EventSink = Callable[[AgentEvent], None]
