@@ -18,6 +18,25 @@ from agents590.provider import UNCOpenAISettings
 # The deployment's real context window isn't known here, so keep this well below it:
 # the next request also carries this step's tool results (each at most MAX_OUTPUT_CHARS).
 MAX_CONTEXT_TOKENS = 200_000
+# Limits on a whole run. Masking old tool results makes the history grow slowly, so without
+# these a stuck model could spend thousands of billable steps before reaching the context cap.
+MAX_STEPS = 200
+MAX_TOTAL_TOKENS = 10_000_000
+MAX_RUN_SECONDS = 30 * 60
+
+
+def _stop_reason(step: int, context_tokens: int, total_tokens: int, seconds: float) -> str | None:
+    """Say which limit the run has reached, or None while it may continue."""
+    reached = None
+    if context_tokens >= MAX_CONTEXT_TOKENS:
+        reached = f"at {context_tokens:,} context tokens (cap {MAX_CONTEXT_TOKENS:,})"
+    elif total_tokens >= MAX_TOTAL_TOKENS:
+        reached = f"after {total_tokens:,} total tokens (cap {MAX_TOTAL_TOKENS:,})"
+    elif step >= MAX_STEPS:
+        reached = f"after {step:,} steps (cap {MAX_STEPS:,})"
+    elif seconds >= MAX_RUN_SECONDS:
+        reached = f"after {seconds:,.0f} seconds (cap {MAX_RUN_SECONDS:,})"
+    return f"Stopped {reached} without a final answer." if reached else None
 
 
 class Morty:
@@ -41,8 +60,10 @@ class Morty:
         results: list[FunctionCallOutput] = []
         trajectory = Trajectory(context.trajectory_path, instruction, model, TOOL_DEFINITIONS)
 
-        # Every step adds to the history, so the token cap below always ends this loop.
+        # The step limit in _stop_reason always ends this loop.
         step = 0
+        total_tokens = 0
+        run_started = time.monotonic()
         while True:
             step += 1
             # tell whoever is watching (the CLI trace) what we're doing
@@ -83,11 +104,10 @@ class Morty:
 
             # input + output is the history the next request starts from
             used = usage.input_tokens + usage.output_tokens if usage else 0
-            if used >= MAX_CONTEXT_TOKENS:
-                return (
-                    f"Stopped at {used:,} context tokens (cap {MAX_CONTEXT_TOKENS:,}) "
-                    "without a final answer."
-                )
+            total_tokens += used
+            stop = _stop_reason(step, used, total_tokens, time.monotonic() - run_started)
+            if stop:
+                return stop
 
             # runs the calls one at a time and in order, since later edits can depend on earlier
             for call in calls:

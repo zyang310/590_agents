@@ -14,7 +14,7 @@ from agents590.contracts import RunContext
 from agents590.registry import agent_names, create_agent
 from agents590.trace import Trace
 
-TRAJECTORY_PATH_ENV = "AGENTS590_TRAJECTORY_PATH"
+TRAJECTORY_PATH_ENV = "AGENTS590_ATIF_PATH"
 
 
 class Arguments(argparse.Namespace):

@@ -133,6 +133,44 @@ This configuration was migrated from `evals/src/coding_agent/provider.py`, whose
 UNC routing was checked against LearnWithAI revision
 `5c239db1b27abdb28c1969fbb1046ee0d700ea53`. Tests use mocked HTTP transports.
 
+## Let Morty edit itself
+
+Morty stops a run at 200 steps, 10 million total tokens, or 30 minutes. Its shell commands
+can't see API keys, tokens or model settings, can't wait on stdin, and are killed along with
+everything they started when they time out. These limits prevent accidents, but they don't
+contain a misbehaving agent. For that, use `selfhost/` whenever Morty works on this repository.
+
+A frozen copy of Morty, baked into a Docker image, works on a throwaway clone, so a bad edit
+can't stop the next run. Its commits come back as a bundle, and only you can merge them. Docker
+must be running, and the image is built from commits, so commit your changes first:
+
+```sh
+selfhost/build.sh                          # freeze HEAD as morty-stage:latest
+selfhost/run.sh -i "Add a --version flag"  # billable; prints a run ID, default model from .env
+selfhost/review.sh RUN_ID                  # fetch as refs/morty/RUN_ID and show what to check
+```
+
+`run.sh` starts three containers, one after another:
+
+1. **Agent:** edits and tests `/work`, which is the clone, as often as it likes. Anything left
+   uncommitted is committed for it when it exits.
+2. **Bundle:** packages those commits, with the network off.
+3. **Gate:** runs `make check` and the run's tests on the bundle, then runs the image's frozen
+   tests against it, with the network off. Offline, a run that changes dependencies fails here.
+
+`review.sh` rejects symlinks, submodules and rewritten history, and lists any change outside
+`src/agents590/`, since those files can run on your machine once merged. It prints the commands
+to read the diff, run the evals, and accept or discard the run. To accept a run, merge it and
+rebuild the image. To roll back, run `selfhost/build.sh OLDER_REF`.
+
+- **Stay out of the clone.** Never run git in `~/morty/runs/*/clone` or open it in an editor.
+  The agent can write to its `.git/config`, and git would run what it planted there. `review.sh`
+  reads only the bundle.
+- **A passing gate isn't approval.** Removing a spending limit could still pass every test, so
+  read the diff.
+- **The key isn't protected.** It's readable inside the agent's container and the network is
+  open, so this protects your machine and this repository, not the key.
+
 ## Development
 
 ```sh

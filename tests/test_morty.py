@@ -3,6 +3,8 @@
 import asyncio
 import json
 import os
+import sys
+import time
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
@@ -24,7 +26,7 @@ from agents590.events import (
 )
 from agents590.morty import Morty
 from agents590.morty.prompt import SYSTEM_PROMPT
-from agents590.morty.tools.bash import run_bash
+from agents590.morty.tools.bash import command_environment, run_bash
 from agents590.morty.trimming import MASKED_RESULT, MAX_OUTPUT_CHARS
 
 
@@ -115,6 +117,118 @@ def test_timed_out_command_reports_no_exit_code(tmp_path: Path) -> None:
     finished = events[-1]
     assert isinstance(finished, CommandFinished)
     assert finished.exit_code is None
+
+
+def test_a_timeout_also_kills_what_the_command_started(tmp_path: Path) -> None:
+    command = "(sleep 1; touch survived) & wait"
+    result = asyncio.run(run_bash(command, RunContext(cwd=tmp_path), timeout=0.2))
+    assert "timed out" in result
+
+    time.sleep(1.2)
+    assert not (tmp_path / "survived").exists()
+
+
+def test_cancelling_a_command_kills_what_it_started(tmp_path: Path) -> None:
+    async def cancel_it() -> None:
+        command = "(sleep 1; touch survived) & wait"
+        task = asyncio.create_task(run_bash(command, RunContext(cwd=tmp_path)))
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_it())
+
+    time.sleep(1.2)
+    assert not (tmp_path / "survived").exists()
+
+
+def test_a_command_reading_stdin_ends_at_once_instead_of_hanging(tmp_path: Path) -> None:
+    # pytest points stdin at /dev/null, so give this process one that never ends, like a terminal
+    read_end, write_end = os.pipe()
+    saved_stdin = os.dup(0)
+    os.dup2(read_end, 0)
+    try:
+        result = asyncio.run(run_bash("cat", RunContext(cwd=tmp_path), timeout=2))
+    finally:
+        os.dup2(saved_stdin, 0)
+        for descriptor in (saved_stdin, read_end, write_end):
+            os.close(descriptor)
+    assert result.startswith("exit code: 0")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+        "AGENTS590_ATIF_PATH",
+        "ANTHROPIC_API_KEY",
+        "GH_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "SSH_AUTH_SOCK",
+        "db_password",
+    ],
+)
+def test_commands_cannot_see_secrets_or_model_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setenv(name, "must-not-leak")
+
+    result = asyncio.run(run_bash("env", RunContext(cwd=tmp_path)))
+
+    assert result.startswith("exit code: 0")
+    assert "must-not-leak" not in result
+
+
+@pytest.mark.parametrize("name", ["KEEP_ME", "KEYBOARD_LAYOUT", "XAUTHORITY", "MONKEY"])
+def test_commands_keep_ordinary_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setenv(name, "still-here")
+
+    result = asyncio.run(run_bash("env", RunContext(cwd=tmp_path)))
+
+    assert f"{name}=still-here" in result
+
+
+def _fake_venv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Make this process look like it is running from a venv under tmp_path."""
+    venv = (tmp_path / "harness" / ".venv").resolve()
+    (venv / "bin").mkdir(parents=True)
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "python"))
+    monkeypatch.setenv("PATH", f"{venv / 'bin'}:/usr/bin:/bin")
+    return venv
+
+
+def test_commands_do_not_inherit_the_venv_the_harness_runs_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    venv = _fake_venv(tmp_path, monkeypatch)
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv))
+
+    env = command_environment()
+
+    assert "VIRTUAL_ENV" not in env
+    assert env["PATH"] == "/usr/bin:/bin"
+
+
+def test_commands_keep_a_venv_the_user_activated_for_their_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_venv(tmp_path, monkeypatch)
+    project_venv = tmp_path / "project" / ".venv"
+    (project_venv / "bin").mkdir(parents=True)
+    monkeypatch.setenv("VIRTUAL_ENV", str(project_venv))
+    monkeypatch.setenv("PATH", f"{project_venv / 'bin'}:/usr/bin")
+
+    env = command_environment()
+
+    assert env["VIRTUAL_ENV"] == str(project_venv)
+    assert env["PATH"] == f"{project_venv / 'bin'}:/usr/bin"
 
 
 def _run_recorded(
@@ -268,6 +382,55 @@ def test_morty_stops_before_running_tools_once_the_context_hits_the_cap(
     assert answer == "Stopped at 37 context tokens (cap 37) without a final answer."
     assert not (tmp_path / "ran").exists()
     assert trajectory["steps"][1]["observation"] == {"results": []}
+
+
+@pytest.mark.parametrize(
+    ("limit", "value", "expected"),
+    [
+        ("MAX_STEPS", 2, "Stopped after 2 steps (cap 2) without a final answer."),
+        (
+            "MAX_TOTAL_TOKENS",
+            74,  # two USAGE replies, while neither alone reaches the context cap
+            "Stopped after 74 total tokens (cap 74) without a final answer.",
+        ),
+    ],
+)
+def test_morty_stops_once_the_whole_run_reaches_a_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: str, value: int, expected: str
+) -> None:
+    monkeypatch.setattr(f"agents590.morty.{limit}", value)
+    answer, _ = _run_recorded(
+        tmp_path,
+        monkeypatch,
+        [_reply(_bash_call("call_a", "touch first")), _reply(_bash_call("call_b", "touch second"))],
+    )
+
+    assert answer == expected
+    assert (tmp_path / "first").exists()
+    assert not (tmp_path / "second").exists()
+
+
+def test_morty_stops_once_the_run_has_taken_too_long(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("agents590.morty.MAX_RUN_SECONDS", 0)
+    answer, _ = _run_recorded(tmp_path, monkeypatch, [_reply(_bash_call("call_a", "touch ran"))])
+
+    assert answer == "Stopped after 0 seconds (cap 0) without a final answer."
+    assert not (tmp_path / "ran").exists()
+
+
+def test_the_step_limit_ends_a_run_whose_replies_report_no_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("agents590.morty.MAX_STEPS", 3)
+    answer, _ = _run_recorded(
+        tmp_path,
+        monkeypatch,
+        [_reply(_bash_call(f"call_{n}", "pwd"), usage=None) for n in range(3)],
+    )
+
+    assert answer == "Stopped after 3 steps (cap 3) without a final answer."
 
 
 def test_long_output_keeps_its_start_and_end_so_a_late_error_survives(tmp_path: Path) -> None:
