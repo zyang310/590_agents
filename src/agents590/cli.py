@@ -15,6 +15,7 @@ from agents590.registry import agent_names, create_agent
 from agents590.trace import Trace
 
 TRAJECTORY_PATH_ENV = "AGENTS590_ATIF_PATH"
+SKILLS_DIR_ENV = "AGENTS590_SKILLS_DIR"
 
 
 class Arguments(argparse.Namespace):
@@ -61,13 +62,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     trajectory_path = Path(trajectory_path_value) if trajectory_path_value else None
     if trajectory_path is not None and not trajectory_path.is_absolute():
         parser.error(f"{TRAJECTORY_PATH_ENV} must be an absolute path")
+    skills_dir_value = os.environ.get(SKILLS_DIR_ENV, "").strip()
+    skills_dir = (cwd / skills_dir_value).resolve() if skills_dir_value else None
+    if skills_dir is not None and not skills_dir.is_dir():
+        parser.error(f"{SKILLS_DIR_ENV} must name an existing directory")
     # Progress goes to stderr so stdout stays the bare answer that Harbor and pipes read.
     trace = Trace.to_console(Console(stderr=True, highlight=False, quiet=args.quiet))
     try:
         agent = create_agent(args.agent)
         trace.start(args.agent, args.instruction, cwd)
         context = RunContext(
-            cwd=cwd, model=args.model, on_event=trace, trajectory_path=trajectory_path
+            cwd=cwd,
+            model=args.model,
+            on_event=trace,
+            trajectory_path=trajectory_path,
+            skills_dir=skills_dir,
         )
         output = asyncio.run(agent.run(args.instruction, context))
     except (ValueError, TypeError, NotImplementedError) as error:

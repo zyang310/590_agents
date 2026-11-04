@@ -18,10 +18,14 @@ class ToolError(Exception):
 
 @dataclass(frozen=True)
 class Tool:
-    """A tool's schema for the model, and the code that runs a call to it."""
+    """A tool's schema for the model, and the code that runs a call to it.
+
+    `keep_result` exempts the tool's results from masking, for text the model needs all run.
+    """
 
     definition: FunctionToolParam
     run: Callable[[dict[str, Any], RunContext], Awaitable[str]]
+    keep_result: bool = False
 
 
 @dataclass(frozen=True)

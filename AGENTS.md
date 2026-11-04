@@ -11,5 +11,6 @@
   requests in tests; make live requests only when explicitly requested.
 - Run `make check` and `make test` after changes. Run `uv sync` after changing entry points.
 - Use `-i` / `--instruction` for a one-line instruction; preserve this CLI contract
-  because the sibling eval project's Harbor adapter invokes it.
+  because the sibling eval project's Harbor adapter invokes it. The adapter also sets
+  `AGENTS590_SKILLS_DIR` for tasks with a `skills_dir`, so preserve that too.
 - Morty works on this repository only through `selfhost/`, never on this checkout directly.

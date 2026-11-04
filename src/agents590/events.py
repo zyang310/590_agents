@@ -5,6 +5,14 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class SkillsDiscovered:
+    """The skills this run found at startup, and any problems found while looking for them."""
+
+    names: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class StepStarted:
     """The agent is asking the model for its next move."""
 
@@ -62,6 +70,12 @@ class ToolFinished:
 
 
 type AgentEvent = (
-    StepStarted | ModelResponded | CommandStarted | CommandFinished | ToolStarted | ToolFinished
+    SkillsDiscovered
+    | StepStarted
+    | ModelResponded
+    | CommandStarted
+    | CommandFinished
+    | ToolStarted
+    | ToolFinished
 )
 type EventSink = Callable[[AgentEvent], None]

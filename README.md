@@ -133,6 +133,59 @@ This configuration was migrated from `evals/src/coding_agent/provider.py`, whose
 UNC routing was checked against LearnWithAI revision
 `5c239db1b27abdb28c1969fbb1046ee0d700ea53`. Tests use mocked HTTP transports.
 
+## Skills
+
+Morty supports [Agent Skills](https://agentskills.io/specification): folders of instructions,
+and optionally scripts, that it loads only when a task needs them. Each skill is a directory
+holding a `SKILL.md`, whose frontmatter names the skill and says when to use it:
+
+```text
+.agents/skills/
+└── rename-python-variable/
+    ├── SKILL.md
+    └── scripts/new_name.py
+```
+
+```markdown
+---
+name: rename-python-variable
+description: Use when renaming a variable in Python code.
+---
+
+From this skill's directory, run `python scripts/new_name.py <current_name>`.
+```
+
+Morty looks in these places, and the first skill to claim a name wins:
+
+1. The directory named by `AGENTS590_SKILLS_DIR`. A relative path starts from `--cwd`, and a
+   missing directory is an error. The Harbor adapter sets this for tasks with a `skills_dir`.
+2. `.agents/skills` in the working directory and each parent up to the git root, nearest first.
+   Outside a git repository, only the working directory counts.
+3. `~/.agents/skills`.
+
+Only the direct subdirectories of those folders count. The trace lists the skills a run found,
+along with any problems. A file with no usable frontmatter or description is skipped, while
+smaller problems, such as a name that doesn't match its directory, only warn.
+
+The model sees each skill's name and description in the system prompt, and loads a skill's
+instructions with the `skill` tool. They then stay in the conversation for the rest of the run,
+up to 20,000 characters. A skill's scripts run through the `bash` tool, under its usual limits.
+
+To load a skill yourself, start the instruction with its name. An unknown name fails before any
+model request:
+
+```sh
+uv run agents590 morty -i "/skill:rename-python-variable rename total in invoice.py"
+```
+
+A skill with `disable-model-invocation: true` in its frontmatter loads only this way, and the
+model isn't told about it. The terminal UI finds project and user skills, but doesn't read
+`AGENTS590_SKILLS_DIR`.
+
+**Project skills can steer Morty, and it loads them without asking.** A skill can tell the model
+to run anything, so treat one like code from its repository. Run Morty on a repository you don't
+trust only inside a container, the way `selfhost/` does for this one.
+
 ## Let Morty edit itself
 
 Morty stops a run at 200 steps, 10 million total tokens, or 30 minutes. Its shell commands

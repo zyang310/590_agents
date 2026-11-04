@@ -12,6 +12,7 @@ from agents590.events import (
     CommandFinished,
     CommandStarted,
     ModelResponded,
+    SkillsDiscovered,
     StepStarted,
     ToolFinished,
     ToolStarted,
@@ -66,6 +67,25 @@ def test_final_answer_is_left_to_the_caller() -> None:
     assert "the final answer" not in output
     assert "step 1 ·" not in output
     assert "✓ done · 1 step · m" in output
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        (SkillsDiscovered(("alpha", "beta")), ["  skills alpha, beta"]),
+        (
+            SkillsDiscovered((), ("skipped a: [bold]odd[/bold]",)),
+            [
+                "  skills none",
+                "  ! skipped a: [bold]odd[/bold]",
+            ],
+        ),
+    ],
+)
+def test_trace_lists_discovered_skills_and_problems_as_plain_text(
+    event: SkillsDiscovered, expected: list[str]
+) -> None:
+    assert _render([event]).splitlines()[2:-3] == expected
 
 
 def test_long_output_keeps_its_head_and_tail() -> None:

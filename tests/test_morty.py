@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shlex
 import sys
 import time
 from functools import partial
@@ -22,10 +23,13 @@ from agents590.events import (
     CommandFinished,
     CommandStarted,
     ModelResponded,
+    SkillsDiscovered,
     StepStarted,
 )
 from agents590.morty import Morty
 from agents590.morty.prompt import SYSTEM_PROMPT
+from agents590.morty.skills.discovery import SKILLS_DIR
+from agents590.morty.tools import TOOLS
 from agents590.morty.tools.bash import command_environment, run_bash
 from agents590.morty.trimming import MASKED_RESULT, MAX_OUTPUT_CHARS
 
@@ -37,6 +41,14 @@ def isolated_provider_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-unc-key")
     monkeypatch.setenv("OPENAI_MODEL", "course-deployment")
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Keep the skills in the developer's own home out of these runs."""
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
 
 
 USAGE = {
@@ -165,6 +177,7 @@ def test_a_command_reading_stdin_ends_at_once_instead_of_hanging(tmp_path: Path)
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
         "AGENTS590_ATIF_PATH",
+        "AGENTS590_SKILLS_DIR",
         "ANTHROPIC_API_KEY",
         "GH_TOKEN",
         "AWS_SECRET_ACCESS_KEY",
@@ -517,3 +530,196 @@ def test_file_tool_calls_change_real_files_and_a_failed_edit_does_not_end_the_ru
     assert contents[1].startswith("Error: old_string was not found")
     assert "Replaced 1 occurrence" in contents[2]
     assert contents[3] == "     1\tone\n     2\t2"
+
+
+def _add_skill(root: Path, name: str, description: str, body: str, fields: str = "") -> Path:
+    """Write a skill under `root` and return its directory."""
+    directory = root / name
+    directory.mkdir(parents=True)
+    text = f"---\nname: {name}\ndescription: {description}\n{fields}---\n{body}\n"
+    (directory / "SKILL.md").write_text(text)
+    return directory
+
+
+def _skill_call(call_id: str, skill: str) -> dict[str, object]:
+    arguments = json.dumps({"name": skill})
+    return {**BASH_CALL, "call_id": call_id, "name": "skill", "arguments": arguments}
+
+
+def _run_capturing(
+    monkeypatch: pytest.MonkeyPatch,
+    replies: list[httpx.Response],
+    context: RunContext,
+    instruction: str = "do it",
+) -> tuple[str, list[dict[str, Any]]]:
+    """Run Morty against canned replies and return its answer and the requests it sent."""
+    remaining = iter(replies)
+    requests: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return next(remaining)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(provider, "AsyncOpenAI", partial(AsyncOpenAI, http_client=http_client))
+    return asyncio.run(Morty().run(instruction, context)), requests
+
+
+def test_a_run_without_skills_sends_the_usual_prompt_and_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[AgentEvent] = []
+    context = RunContext(cwd=tmp_path, on_event=events.append)
+
+    _, requests = _run_capturing(monkeypatch, [_reply(ANSWER)], context)
+
+    assert requests[0]["instructions"] == SYSTEM_PROMPT
+    assert requests[0]["tools"] == [tool.definition for tool in TOOLS]
+    assert not any(isinstance(event, SkillsDiscovered) for event in events)
+
+
+def test_skills_add_a_catalog_and_tool_that_stay_identical_on_every_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_skill(tmp_path / SKILLS_DIR, "demo", "Use for demos.", "Do it.")
+    events: list[AgentEvent] = []
+    context = RunContext(cwd=tmp_path, on_event=events.append)
+    replies = [_reply(_bash_call("call_a", "pwd")), _reply(ANSWER)]
+
+    _, (first, second) = _run_capturing(monkeypatch, replies, context)
+
+    assert events[0] == SkillsDiscovered(("demo",))
+    assert first["instructions"].startswith(f"{SYSTEM_PROMPT}\n\nThe following skills")
+    assert "<name>demo</name>" in first["instructions"]
+    assert first["tools"][:4] == [tool.definition for tool in TOOLS]
+    assert first["tools"][4]["name"] == "skill"
+    assert first["tools"][4]["parameters"]["properties"]["name"]["enum"] == ["demo"]
+    assert second["instructions"] == first["instructions"]
+    assert json.dumps(second["tools"]) == json.dumps(first["tools"])
+
+
+def test_a_loaded_skill_outlasts_the_masking_of_old_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_skill(tmp_path / SKILLS_DIR, "demo", "Use for demos.", "Keep this in mind.")
+    calls = [_bash_call(f"call_{n}", f"echo out{n}") for n in range(12)]
+    replies = [_reply(_skill_call("call_s", "demo")), _reply(*calls), _reply(ANSWER)]
+
+    _, requests = _run_capturing(monkeypatch, replies, RunContext(cwd=tmp_path))
+
+    items = requests[2]["input"]
+    outputs = [item["output"] for item in items if item.get("type") == "function_call_output"]
+    assert "Keep this in mind." in outputs[0]
+    assert outputs[1:3] == [MASKED_RESULT] * 2
+    assert all(f"out{n}" in outputs[n + 1] for n in range(2, 12))
+
+
+def test_a_skill_command_loads_the_skill_into_the_first_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_skill(tmp_path / SKILLS_DIR, "demo", "Use for demos.", "Do it.")
+    context = RunContext(cwd=tmp_path)
+
+    _, requests = _run_capturing(monkeypatch, [_reply(ANSWER)], context, "/skill:demo and hurry")
+
+    message = requests[0]["input"][0]["content"]
+    assert message.startswith('<skill_content name="demo">\nDo it.\n')
+    assert message.endswith("</skill_content>\n\nand hurry")
+
+
+def test_a_skill_kept_for_users_answers_only_to_its_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fields = "disable-model-invocation: true\n"
+    _add_skill(tmp_path / SKILLS_DIR, "demo", "Use for demos.", "Do it.", fields)
+    events: list[AgentEvent] = []
+    context = RunContext(cwd=tmp_path, on_event=events.append)
+
+    _, requests = _run_capturing(monkeypatch, [_reply(ANSWER)], context, "/skill:demo")
+
+    assert "Do it." in requests[0]["input"][0]["content"]
+    assert requests[0]["instructions"] == SYSTEM_PROMPT
+    assert requests[0]["tools"] == [tool.definition for tool in TOOLS]
+    assert events[0] == SkillsDiscovered(("demo",))
+
+
+def test_an_unknown_skill_command_fails_before_any_model_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ValueError, match="unknown skill 'missing'"):
+        _run_capturing(monkeypatch, [], RunContext(cwd=tmp_path), "/skill:missing")
+
+
+def test_a_broken_skill_is_reported_and_the_run_carries_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broken = tmp_path / SKILLS_DIR / "broken"
+    broken.mkdir(parents=True)
+    (broken / "SKILL.md").write_text("no frontmatter here")
+    events: list[AgentEvent] = []
+    context = RunContext(cwd=tmp_path, on_event=events.append)
+
+    answer, requests = _run_capturing(monkeypatch, [_reply(ANSWER)], context)
+
+    assert answer == "all done"
+    assert requests[0]["instructions"] == SYSTEM_PROMPT
+    discovered = events[0]
+    assert isinstance(discovered, SkillsDiscovered)
+    assert discovered.names == ()
+    assert "skipped" in discovered.warnings[0]
+
+
+def test_a_run_can_choose_a_skill_and_use_its_script_like_the_rename_eval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skills_dir = tmp_path / "skills"
+    python_skill = _add_skill(
+        skills_dir,
+        "rename-python-variable",
+        "Use when renaming a variable in Python code.",
+        "From this skill's directory, run `python scripts/new_name.py <current_name>`.",
+    )
+    sql_skill = _add_skill(
+        skills_dir,
+        "rename-sql-column",
+        "Use when renaming a column in SQL code.",
+        "From this skill's directory, run `python scripts/new_name.py <current_name>`.",
+    )
+    for directory, suffix in ((python_skill, "zq7"), (sql_skill, "col")):
+        (directory / "scripts").mkdir()
+        script = f'import sys\nprint(f"{{sys.argv[1]}}_{suffix}")\n'
+        (directory / "scripts" / "new_name.py").write_text(script)
+    work = tmp_path / "app"
+    work.mkdir()
+    (work / "invoice.py").write_text("total = 1\nprint(total)\n")
+    python = shlex.quote(sys.executable)
+    command = f"cd {shlex.quote(str(python_skill))} && {python} scripts/new_name.py total"
+    edit = {"path": "invoice.py", "old_string": "total", "new_string": "total_zq7"}
+    replies = [
+        _reply(_skill_call("call_s", "rename-python-variable")),
+        _reply(_bash_call("call_b", command)),
+        _reply(_tool_call("call_e", "edit", replace_all=True, **edit)),
+        _reply(ANSWER),
+    ]
+    path = tmp_path / "trajectory.json"
+    context = RunContext(cwd=work, skills_dir=skills_dir, trajectory_path=path)
+
+    answer, requests = _run_capturing(monkeypatch, replies, context)
+
+    assert answer == "all done"
+    assert (work / "invoice.py").read_text() == "total_zq7 = 1\nprint(total_zq7)\n"
+    assert "<name>rename-python-variable</name>" in requests[0]["instructions"]
+    assert "<name>rename-sql-column</name>" in requests[0]["instructions"]
+    trajectory = json.loads(path.read_text())
+    definition = trajectory["agent"]["tool_definitions"][-1]["function"]
+    assert definition["name"] == "skill"
+    assert definition["parameters"]["properties"]["name"]["enum"] == [
+        "rename-python-variable",
+        "rename-sql-column",
+    ]
+    steps = trajectory["steps"][1:4]
+    names = [step["tool_calls"][0]["function_name"] for step in steps]
+    assert names == ["skill", "bash", "edit"]
+    contents = [step["observation"]["results"][0]["content"] for step in steps]
+    assert f"Skill directory: {python_skill}" in contents[0]
+    assert "total_zq7" in contents[1]

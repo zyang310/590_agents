@@ -18,9 +18,10 @@ BASH_TIMEOUT_SECONDS = 30.0
 KILL_GRACE_SECONDS = 2.0
 
 # Commands don't need these, and without the model settings a stray `make smoke` or nested
-# agent fails instead of spending money. A nested agent must not overwrite this run's log either.
+# agent fails instead of spending money. A nested agent must not overwrite this run's log either,
+# and the model should reach skills through its catalog, not by finding them in the environment.
 HIDDEN_ENV_PREFIXES = ("OPENAI_", "AZURE_OPENAI_")
-HIDDEN_ENV_NAMES = {"AGENTS590_ATIF_PATH"}
+HIDDEN_ENV_NAMES = {"AGENTS590_ATIF_PATH", "AGENTS590_SKILLS_DIR"}
 SECRET_ENV_WORDS = {
     "APIKEY",
     "AUTH",

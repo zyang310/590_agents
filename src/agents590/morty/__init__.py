@@ -8,15 +8,17 @@ from openai.types.responses import ResponseInputParam
 from openai.types.responses.response_input_item_param import FunctionCallOutput
 
 from agents590.contracts import RunContext
-from agents590.events import ModelResponded, StepStarted
-from agents590.morty.prompt import SYSTEM_PROMPT
-from agents590.morty.tools import TOOL_DEFINITIONS, run_tool
+from agents590.events import ModelResponded, SkillsDiscovered, StepStarted
+from agents590.morty.prompt import build_instructions
+from agents590.morty.skills import discover_skills, expand_command
+from agents590.morty.tools import tools_for
 from agents590.morty.trajectory import Trajectory
 from agents590.morty.trimming import mask_old_results
 from agents590.provider import UNCOpenAISettings
 
 # The deployment's real context window isn't known here, so keep this well below it:
-# the next request also carries this step's tool results (each at most MAX_OUTPUT_CHARS).
+# the next request also carries this step's tool results (each at most MAX_OUTPUT_CHARS, or
+# MAX_SKILL_CHARS for a skill's instructions).
 MAX_CONTEXT_TOKENS = 200_000
 # Limits on a whole run. Masking old tool results makes the history grow slowly, so without
 # these a stuck model could spend thousands of billable steps before reaching the context cap.
@@ -56,9 +58,18 @@ class Morty:
         client = settings.create_async_client()
         model = settings.model
 
+        found = discover_skills(context.cwd, context.skills_dir)
+        if found.skills or found.warnings:
+            names = tuple(skill.name for skill in found.skills)
+            context.report(SkillsDiscovered(names, found.warnings))
+        instruction = expand_command(instruction, found.skills)
+        # Both stay the same for the whole run, so the model's prompt cache keeps matching.
+        instructions = build_instructions(found.for_model)
+        tools = tools_for(found.for_model)
+
         history: ResponseInputParam = [{"role": "user", "content": instruction}]
         results: list[FunctionCallOutput] = []
-        trajectory = Trajectory(context.trajectory_path, instruction, model, TOOL_DEFINITIONS)
+        trajectory = Trajectory(context.trajectory_path, instruction, model, tools.definitions)
 
         # The step limit in _stop_reason always ends this loop.
         step = 0
@@ -71,11 +82,11 @@ class Morty:
             started = time.monotonic()
             response = await client.responses.create(
                 model=model,
-                instructions=SYSTEM_PROMPT,
+                instructions=instructions,
                 input=history,
                 store=False,
                 background=False,
-                tools=TOOL_DEFINITIONS,
+                tools=tools.definitions,
             )
 
             # append output to history to pass into next iteration
@@ -111,7 +122,7 @@ class Morty:
 
             # runs the calls one at a time and in order, since later edits can depend on earlier
             for call in calls:
-                result = await run_tool(call.name, call.arguments, context)
+                result = await tools.run(call.name, call.arguments, context)
                 trajectory.add_result(call.call_id, result)
                 output: FunctionCallOutput = {
                     "type": "function_call_output",
@@ -119,7 +130,8 @@ class Morty:
                     "output": result,
                 }
                 history.append(output)
-                results.append(output)
+                if not tools.keeps_result(call.name):
+                    results.append(output)
 
             # only the newest results stay in full; the calls themselves remain in history
             mask_old_results(results)

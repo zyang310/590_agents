@@ -168,3 +168,40 @@ def test_cli_rejects_relative_trajectory_path(
     with pytest.raises(SystemExit) as error:
         cli.main(["krisj_echo", "-i", "test"])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, None), ("   ", None), ("{cwd}/skills", "skills"), ("skills", "skills")],
+)
+def test_cli_passes_skills_dir_resolved_against_the_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str | None,
+    expected: str | None,
+) -> None:
+    seen: list[RunContext] = []
+
+    class RecordingAgent:
+        async def run(self, instruction: str, context: RunContext) -> str:
+            seen.append(context)
+            return "completed"
+
+    (tmp_path / "skills").mkdir()
+    monkeypatch.setattr(cli, "create_agent", lambda name: RecordingAgent())
+    if value is None:
+        monkeypatch.delenv(cli.SKILLS_DIR_ENV, raising=False)
+    else:
+        monkeypatch.setenv(cli.SKILLS_DIR_ENV, value.format(cwd=tmp_path))
+
+    assert cli.main(["custom-agent", "-i", "test", "--cwd", str(tmp_path)]) == 0
+    assert seen[0].skills_dir == (tmp_path / expected if expected else None)
+    assert capsys.readouterr().out == "completed\n"
+
+
+def test_cli_rejects_a_missing_skills_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(cli.SKILLS_DIR_ENV, str(tmp_path / "missing"))
+    with pytest.raises(SystemExit) as error:
+        cli.main(["krisj_echo", "-i", "test", "--cwd", str(tmp_path)])
+    assert error.value.code == 2

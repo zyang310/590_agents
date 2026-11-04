@@ -26,6 +26,7 @@ from agents590.events import (
     CommandFinished,
     CommandStarted,
     ModelResponded,
+    SkillsDiscovered,
     StepStarted,
     ToolFinished,
     ToolStarted,
@@ -82,6 +83,8 @@ class Trace:
     def __call__(self, event: AgentEvent) -> None:
         self._wait(None)
         match event:
+            case SkillsDiscovered():
+                self._write(_skills(event))
             case StepStarted():
                 self._model = event.model
                 self._wait(_Ticker(f"thinking · step {event.step}"))
@@ -171,6 +174,12 @@ class _Ticker:
 
     def __rich__(self) -> Text:
         return Text(f"{self._label} · {time.monotonic() - self._since:.0f}s", style="dim")
+
+
+def _skills(event: SkillsDiscovered) -> Text:
+    lines = [Text.assemble(("  skills ", "cyan"), (", ".join(event.names) or "none", "bold"))]
+    lines += [Text.assemble(("  ! ", "yellow"), (warning, "yellow")) for warning in event.warnings]
+    return Text("\n").join(lines)
 
 
 def _command(command: str) -> Text:

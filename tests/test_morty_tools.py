@@ -1,4 +1,4 @@
-"""Exercise Morty's tools through `run_tool`, the same entry point the agent loop uses."""
+"""Exercise Morty's tools through `Toolset.run`, the same entry point the agent loop uses."""
 
 import asyncio
 import json
@@ -10,13 +10,15 @@ import pytest
 
 from agents590.contracts import RunContext
 from agents590.events import AgentEvent, ToolFinished, ToolStarted
-from agents590.morty.tools import TOOLS, run_tool
+from agents590.morty.skills import Skill
+from agents590.morty.tools import TOOLS, Toolset
 from agents590.morty.tools.base import Tool
+from agents590.morty.tools.skill import skill_tool
 from agents590.morty.trimming import MAX_OUTPUT_CHARS
 
 
 def _call(cwd: Path, name: str, **arguments: object) -> str:
-    return asyncio.run(run_tool(name, json.dumps(arguments), RunContext(cwd=cwd)))
+    return asyncio.run(Toolset(TOOLS).run(name, json.dumps(arguments), RunContext(cwd=cwd)))
 
 
 def _read(cwd: Path, offset: int | None = None, limit: int | None = None) -> str:
@@ -33,7 +35,12 @@ def five_lines(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.mark.parametrize("tool", TOOLS, ids=lambda tool: tool.definition["name"])
+DEMO_SKILL = Skill("demo", "Use for demos.", Path("/skills/demo/SKILL.md"), "Do it.")
+
+
+@pytest.mark.parametrize(
+    "tool", [*TOOLS, skill_tool([DEMO_SKILL])], ids=lambda tool: tool.definition["name"]
+)
 def test_definitions_satisfy_strict_mode(tool: Tool) -> None:
     parameters: dict[str, Any] = tool.definition["parameters"] or {}
     assert tool.definition["strict"] is True
@@ -225,7 +232,7 @@ def test_file_tools_report_their_start_and_outcome(five_lines: Path) -> None:
     context = RunContext(cwd=five_lines, on_event=events.append)
     arguments = json.dumps({"path": "f.txt", "offset": 1, "limit": 2})
 
-    asyncio.run(run_tool("read", arguments, context))
+    asyncio.run(Toolset(TOOLS).run("read", arguments, context))
 
     started, finished = events
     assert started == ToolStarted("read", "f.txt")
@@ -239,7 +246,7 @@ def test_file_tools_report_a_failure_with_its_error(tmp_path: Path) -> None:
     context = RunContext(cwd=tmp_path, on_event=events.append)
     arguments = json.dumps({"path": "missing.txt", "offset": None, "limit": None})
 
-    result = asyncio.run(run_tool("read", arguments, context))
+    result = asyncio.run(Toolset(TOOLS).run("read", arguments, context))
 
     finished = events[-1]
     assert isinstance(finished, ToolFinished)
